@@ -37,6 +37,8 @@
             /* Set initial size in JS */
             transform-origin: 0 0; /* Zoom/pan from top-left */
             will-change: transform; /* Optimize transformations */
+            /* Added for breadcrumbs */
+            z-index: 1;
         }
 
         /* The map image - fills the wrapper */
@@ -46,6 +48,8 @@
             height: 100%;
             user-select: none; /* Prevent image selection */
             -webkit-user-drag: none; /* Prevent image dragging */
+            position: relative; /* Needed for z-index stacking within wrapper */
+            z-index: 1; /* Behind arrow and breadcrumbs */
         }
 
         /* Arrow shape (user indicator) */
@@ -55,17 +59,30 @@
             height: 0;
             border-left: 12px solid transparent;
             border-right: 12px solid transparent;
-            /* CHANGED: Blue arrow color */
             border-bottom: 24px solid rgba(0, 122, 255, 0.9); /* Blue arrow */
-            /* Centered rotation/positioning */
             left: -12px; /* half width */
             top: -28px; /* adjust for arrow shape based on transform-origin */
             transform-origin: center 16px; /* Rotate around base middle */
             box-shadow: 0 0 5px rgba(0,0,0,0.5);
             display: none; /* Hidden until first location/heading fix */
             pointer-events: none; /* Don't interfere with map interactions */
-            z-index: 10; /* Ensure it's above the map image */
+            z-index: 10; /* Ensure it's above the map image and breadcrumbs */
             will-change: transform, left, top; /* Optimize updates */
+        }
+
+        /* Styling for breadcrumb dots */
+        .breadcrumb-dot {
+            position: absolute; /* Positioned relative to the wrapper */
+            width: 8px;
+            height: 8px;
+            background-color: rgba(0, 0, 255, 0.7); /* Blue dot */
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            /* Center the dot on the coordinate */
+            margin-left: -4px;
+            margin-top: -4px;
+            pointer-events: none; /* Don't interfere with map interactions */
+            z-index: 5; /* Above map, below arrow */
         }
 
         /* Status/Error Message Box */
@@ -88,7 +105,7 @@
         <div id="map-content-wrapper">
             <img id="map-image" src="https://kylebur.github.io/riversidemap/map.jpg" alt="Map Background" />
             <div id="user-arrow"></div>
-        </div>
+            </div>
     </div>
     <div id="status-box">Initializing...</div>
 
@@ -97,20 +114,18 @@
         const MAP_URL = 'https://kylebur.github.io/riversidemap/map.jpg';
         const MAP_NATIVE_WIDTH = 8052;
         const MAP_NATIVE_HEIGHT = 7892;
+        const BREADCRUMB_DROP_DISTANCE_METERS = 5; // Drop dot every 5 meters
 
-        // Geographic corners (derived from provided points A, B, C, D)
+        // Geographic corners
         const MAP_GEO_BOUNDS = {
-            maxLat: 44.03656680482132, // B (highest lat)
-            minLat: 44.03503548569862, // D (lowest lat)
-            minLon: -69.53289514245955, // A (most negative/west)
-            maxLon: -69.53086630657867  // C (least negative/east)
+            maxLat: 44.03656680482132, minLat: 44.03503548569862,
+            minLon: -69.53289514245955, maxLon: -69.53086630657867
         };
         const MAP_LAT_RANGE = MAP_GEO_BOUNDS.maxLat - MAP_GEO_BOUNDS.minLat;
         const MAP_LON_RANGE = MAP_GEO_BOUNDS.maxLon - MAP_GEO_BOUNDS.minLon;
 
         // --- DOM Elements ---
         const mapContainer = document.getElementById('map-container');
-        // ADDED: Get the wrapper element
         const mapContentWrapper = document.getElementById('map-content-wrapper');
         const mapImage = document.getElementById('map-image');
         const userArrow = document.getElementById('user-arrow');
@@ -119,22 +134,21 @@
         // --- State Variables ---
         let currentScale = 1.0;
         let minScale = 1.0;
-        let maxScale = 5.0; // Increased max zoom slightly
-        let currentX = 0; // Translation X of the wrapper
-        let currentY = 0; // Translation Y of the wrapper
+        let maxScale = 5.0;
+        let currentX = 0, currentY = 0;
         let isPanning = false;
         let startX, startY;
         let pinchStartDistance = 0;
         let pinchStartX, pinchStartY;
-        let initialMapX, initialMapY;
-        let initialScale;
+        let initialMapX, initialMapY, initialScale;
         let lastTouchEndTime = 0;
-
         let currentHeading = 0;
-        let hasGeoPermission = false;
-        let hasOrientationPermission = false;
-        let lastKnownLat = null;
-        let lastKnownLon = null;
+        let hasGeoPermission = false, hasOrientationPermission = false;
+        let lastKnownLat = null, lastKnownLon = null;
+
+        // Breadcrumb state
+        let breadcrumbs = []; // Array of {lat, lon} objects
+        let lastDroppedCrumbCoords = null; // {lat, lon} of the last dropped crumb
 
         // --- Utility Functions ---
 
@@ -151,77 +165,102 @@
             }
         }
 
+        // Convert degrees to radians
+        function toRad(degrees) {
+            return degrees * Math.PI / 180;
+        }
+
+        // Calculate distance between two lat/lon points using Haversine formula (returns meters)
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; // Earth radius in meters
+            const phi1 = toRad(lat1);
+            const phi2 = toRad(lat2);
+            const deltaPhi = toRad(lat2 - lat1);
+            const deltaLambda = toRad(lon2 - lon1);
+
+            const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+                      Math.cos(phi1) * Math.cos(phi2) *
+                      Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return R * c; // Distance in meters
+        }
+
+
         function geoToPixel(lat, lon) {
+             // DEBUG: Log coordinates being checked
+             console.log(`Checking coords: Lat=${lat}, Lon=${lon}`);
+             console.log(`Bounds: Lat (${MAP_GEO_BOUNDS.minLat} to ${MAP_GEO_BOUNDS.maxLat}), Lon (${MAP_GEO_BOUNDS.minLon} to ${MAP_GEO_BOUNDS.maxLon})`);
+
             if (lat > MAP_GEO_BOUNDS.maxLat || lat < MAP_GEO_BOUNDS.minLat ||
                 lon < MAP_GEO_BOUNDS.minLon || lon > MAP_GEO_BOUNDS.maxLon) {
-                console.warn("Coordinates out of map bounds:", lat, lon);
-                 return null;
+                console.warn("Coordinates out of map bounds.");
+                 return null; // Explicitly return null if outside bounds
             }
-            // Calculate pixel coordinates relative to the map's native dimensions
             const pixelY = MAP_NATIVE_HEIGHT * (MAP_GEO_BOUNDS.maxLat - lat) / MAP_LAT_RANGE;
             const pixelX = MAP_NATIVE_WIDTH * (lon - MAP_GEO_BOUNDS.minLon) / MAP_LON_RANGE;
 
-            return {
+            const coords = {
                 x: Math.max(0, Math.min(MAP_NATIVE_WIDTH, pixelX)),
                 y: Math.max(0, Math.min(MAP_NATIVE_HEIGHT, pixelY))
             };
+             // DEBUG: Log calculated pixel coordinates
+             console.log("Calculated pixel coords:", coords);
+            return coords;
         }
 
-        // Apply transform to the map content WRAPPER
         function applyTransform() {
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
-            // Use wrapper dimensions for clamping calculations
             const scaledWidth = MAP_NATIVE_WIDTH * currentScale;
             const scaledHeight = MAP_NATIVE_HEIGHT * currentScale;
-
-            const maxTranslateX = 0;
-            const maxTranslateY = 0;
+            const maxTranslateX = 0, maxTranslateY = 0;
             const minTranslateX = screenWidth - scaledWidth;
             const minTranslateY = screenHeight - scaledHeight;
 
-            // Clamp translation
-            if (scaledWidth > screenWidth) {
-                 currentX = Math.max(minTranslateX, Math.min(maxTranslateX, currentX));
-            } else {
-                 currentX = (screenWidth - scaledWidth) / 2; // Center horizontally
-            }
-            if (scaledHeight > screenHeight) {
-                currentY = Math.max(minTranslateY, Math.min(maxTranslateY, currentY));
-            } else {
-                 currentY = (screenHeight - scaledHeight) / 2; // Center vertically
-            }
+            if (scaledWidth > screenWidth) { currentX = Math.max(minTranslateX, Math.min(maxTranslateX, currentX)); }
+            else { currentX = (screenWidth - scaledWidth) / 2; }
+            if (scaledHeight > screenHeight) { currentY = Math.max(minTranslateY, Math.min(maxTranslateY, currentY)); }
+            else { currentY = (screenHeight - scaledHeight) / 2; }
 
-            // Apply transform to the WRAPPER
             mapContentWrapper.style.transform = `translate(${currentX}px, ${currentY}px) scale(${currentScale})`;
-
-            // No need to update arrow position here, it's handled by CSS transform
-            // on the parent wrapper and absolute positioning within it.
-            // We just need to ensure its initial left/top/rotate are set correctly.
         }
 
-        // Update the user indicator's position and rotation within the wrapper
-        function updateUserIndicatorPosition(lat, lon) {
-            lastKnownLat = lat; // Store for potential future use (e.g., centering)
-            lastKnownLon = lon;
+        // Creates and adds a single breadcrumb dot element to the map wrapper
+        function addBreadcrumbElement(lat, lon) {
             const pixelCoords = geoToPixel(lat, lon);
+            if (pixelCoords) {
+                const dot = document.createElement('div');
+                dot.className = 'breadcrumb-dot';
+                dot.style.left = `${pixelCoords.x}px`;
+                dot.style.top = `${pixelCoords.y}px`;
+                // Prepend so arrow stays on top more easily (though z-index should handle it)
+                mapContentWrapper.appendChild(dot);
+                // mapContentWrapper.insertBefore(dot, userArrow); // Alternative
+            }
+        }
+
+        function updateUserIndicatorPosition(lat, lon) {
+            lastKnownLat = lat; lastKnownLon = lon;
+            const pixelCoords = geoToPixel(lat, lon); // Will log coords inside
 
             if (pixelCoords) {
-                // Position the arrow based on calculated pixels relative to the map wrapper
                 userArrow.style.left = `${pixelCoords.x}px`;
                 userArrow.style.top = `${pixelCoords.y}px`;
-
-                // Apply rotation based on compass heading
-                // The rotation is applied directly to the arrow
                 userArrow.style.transform = `rotate(${currentHeading}deg)`;
 
                 if (userArrow.style.display === 'none') {
-                    userArrow.style.display = 'block'; // Show indicator
+                    userArrow.style.display = 'block';
                     showStatus("Location found!", 3000);
                 }
             } else {
-                 userArrow.style.display = 'none'; // Hide if out of bounds
-                 showStatus("You are outside the map area.", 0);
+                 userArrow.style.display = 'none';
+                 // Make the "outside bounds" message persistent if location is known
+                 if (hasGeoPermission) {
+                    showStatus(`Your location (${lat.toFixed(5)}, ${lon.toFixed(5)}) is outside the map area.`, 0);
+                 } else {
+                     showStatus("Waiting for location...", 0);
+                 }
             }
         }
 
@@ -229,17 +268,47 @@
             const widthScale = window.innerWidth / MAP_NATIVE_WIDTH;
             const heightScale = window.innerHeight / MAP_NATIVE_HEIGHT;
             minScale = Math.max(widthScale, heightScale);
-            currentScale = Math.max(minScale, currentScale); // Ensure current isn't too small
+            currentScale = Math.max(minScale, currentScale);
          }
 
         // --- Event Handlers ---
 
         function handleLocationUpdate(position) {
-            hasGeoPermission = true;
+            if (!hasGeoPermission) { // First successful fix
+                 hasGeoPermission = true;
+                 // Potentially redraw existing breadcrumbs if any were loaded/persisted
+            }
+
             const { latitude, longitude, accuracy } = position.coords;
             console.log(`Location: ${latitude}, ${longitude} (Accuracy: ${accuracy}m)`);
             showStatus(`Location Updated (Accuracy: ${accuracy.toFixed(0)}m)`, 2000);
+
+            // Update arrow position regardless of breadcrumb drop
             updateUserIndicatorPosition(latitude, longitude);
+
+            // Check if we should drop a breadcrumb
+            let shouldDrop = false;
+            if (lastDroppedCrumbCoords === null) {
+                shouldDrop = true; // Drop the first point
+            } else {
+                const distanceMoved = calculateDistance(
+                    lastDroppedCrumbCoords.lat, lastDroppedCrumbCoords.lon,
+                    latitude, longitude
+                );
+                console.log(`Distance moved since last crumb: ${distanceMoved.toFixed(1)}m`);
+                if (distanceMoved >= BREADCRUMB_DROP_DISTANCE_METERS) {
+                    shouldDrop = true;
+                }
+            }
+
+            if (shouldDrop) {
+                console.log("Dropping breadcrumb.");
+                const crumbData = { lat: latitude, lon: longitude };
+                breadcrumbs.push(crumbData);
+                lastDroppedCrumbCoords = crumbData; // Update last dropped position
+                addBreadcrumbElement(latitude, longitude); // Add the visual element
+                 // Optional: Persist breadcrumbs to localStorage?
+            }
         }
 
         function handleLocationError(error) {
@@ -253,30 +322,26 @@
             console.error(message);
             showStatus(message, 5000);
              userArrow.style.display = 'none';
+             hasGeoPermission = false; // Reset permission status on error
         }
 
         function handleOrientationUpdate(event) {
             hasOrientationPermission = true;
             let heading = event.webkitCompassHeading !== undefined ? event.webkitCompassHeading : event.alpha;
-
             if (heading !== null) {
-                // Adjust heading so 0 degrees points UP (North) on the map
-                // Assuming the map image itself is North-up.
                 currentHeading = heading;
                  if (userArrow.style.display !== 'none') {
-                     // Update rotation immediately if indicator is visible
                      userArrow.style.transform = `rotate(${currentHeading}deg)`;
                  }
-            } else {
-                console.warn("Could not get compass heading.");
-            }
+            } else { console.warn("Could not get compass heading."); }
         }
          function handleOrientationError(error) {
             console.error("DeviceOrientation Error:", error);
             showStatus("Could not access orientation sensors.", 5000);
         }
 
-        function handleTouchStart(event) {
+        // --- Touch Handlers (Panning/Zooming - unchanged) ---
+        function handleTouchStart(event) { /* ... unchanged ... */
             if (event.touches.length === 1) {
                 isPanning = true;
                 mapContainer.classList.add('grabbing');
@@ -290,16 +355,11 @@
                 pinchStartDistance = Math.sqrt(dx * dx + dy * dy);
                 pinchStartX = (event.touches[0].pageX + event.touches[1].pageX) / 2;
                 pinchStartY = (event.touches[0].pageY + event.touches[1].pageY) / 2;
-                // Store initial wrapper transform state for zoom calculation
-                initialMapX = currentX;
-                initialMapY = currentY;
-                initialScale = currentScale;
+                initialMapX = currentX; initialMapY = currentY; initialScale = currentScale;
             }
-        }
-
-        function handleTouchMove(event) {
+         }
+        function handleTouchMove(event) { /* ... unchanged ... */
              event.preventDefault();
-
             if (isPanning && event.touches.length === 1) {
                 currentX = event.touches[0].pageX - startX;
                 currentY = event.touches[0].pageY - startY;
@@ -310,76 +370,40 @@
                 const currentPinchDistance = Math.sqrt(dx * dx + dy * dy);
                 let scaleChange = currentPinchDistance / pinchStartDistance;
                 let newScale = initialScale * scaleChange;
-
                 newScale = Math.max(minScale, Math.min(maxScale, newScale));
-
-                // Calculate zoom point relative to the wrapper's untransformed origin
                 const mapZoomX = (pinchStartX - initialMapX) / initialScale;
                 const mapZoomY = (pinchStartY - initialMapY) / initialScale;
-
-                // Calculate new translation to keep map point under pinch center
                 currentScale = newScale;
                 currentX = pinchStartX - mapZoomX * currentScale;
                 currentY = pinchStartY - mapZoomY * currentScale;
-
                 applyTransform();
             }
         }
-
-        function handleTouchEnd(event) {
-            if (isPanning) {
-                isPanning = false;
-                mapContainer.classList.remove('grabbing');
-            }
-            if (event.touches.length < 2) {
-                pinchStartDistance = 0;
-            }
+        function handleTouchEnd(event) { /* ... unchanged ... */
+            if (isPanning) { isPanning = false; mapContainer.classList.remove('grabbing'); }
+            if (event.touches.length < 2) { pinchStartDistance = 0; }
         }
+        function handleResize() { calculateMinScale(); applyTransform(); }
 
-        function handleResize() {
-            calculateMinScale();
-            applyTransform();
-        }
-
-        async function requestPermissions() {
-             let orientationGranted = false;
-             let geoGranted = false;
-
-             // --- Device Orientation ---
+        // --- Permissions Request (unchanged) ---
+        async function requestPermissions() { /* ... unchanged ... */
+             let orientationGranted = false; let geoGranted = false;
+             // Orientation
              if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
                  showStatus("Requesting orientation permission...");
                  try {
                      const permissionState = await DeviceOrientationEvent.requestPermission();
-                     if (permissionState === 'granted') {
-                         window.addEventListener('deviceorientation', handleOrientationUpdate);
-                         orientationGranted = true; hasOrientationPermission = true;
-                         showStatus("Orientation permission granted.", 2000);
-                     } else { showStatus("Orientation permission denied.", 5000); }
-                 } catch (error) {
-                     console.error("Error requesting orientation permission:", error);
-                     showStatus("Could not request orientation permission.", 5000);
-                     window.addEventListener('deviceorientation', handleOrientationUpdate, true);
-                     orientationGranted = true; // Tentative
-                 }
-             } else {
-                 console.log("DeviceOrientationEvent.requestPermission not found. Adding listener directly.");
-                 window.addEventListener('deviceorientation', handleOrientationUpdate, true);
-                 orientationGranted = true; hasOrientationPermission = true; // Assume okay
-             }
-
-             // --- Geolocation ---
+                     if (permissionState === 'granted') { window.addEventListener('deviceorientation', handleOrientationUpdate); orientationGranted = true; hasOrientationPermission = true; showStatus("Orientation permission granted.", 2000); }
+                     else { showStatus("Orientation permission denied.", 5000); }
+                 } catch (error) { console.error("Orientation permission error:", error); showStatus("Could not request orientation permission.", 5000); window.addEventListener('deviceorientation', handleOrientationUpdate, true); orientationGranted = true; }
+             } else { window.addEventListener('deviceorientation', handleOrientationUpdate, true); orientationGranted = true; hasOrientationPermission = true; }
+             // Geolocation
              if (navigator.geolocation) {
                  showStatus("Requesting location permission...");
-                 navigator.geolocation.watchPosition( handleLocationUpdate, handleLocationError,
-                     { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
-                 );
-                 geoGranted = true; // Assume request initiated
-             } else {
-                 showStatus("Geolocation is not supported by this browser.", 0);
-                 geoGranted = false;
-             }
-
-             // --- Update Status Based on Permissions ---
+                 navigator.geolocation.watchPosition( handleLocationUpdate, handleLocationError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
+                 geoGranted = true;
+             } else { showStatus("Geolocation is not supported.", 0); geoGranted = false; }
+             // Status Update
              if (!geoGranted && !orientationGranted) { showStatus("Required sensors (GPS/Compass) not available or permissions denied.", 0); }
              else if (!geoGranted) { showStatus("Location not available/denied. Map interaction enabled.", 0); }
              else if (!orientationGranted) { showStatus("Orientation not available/denied. Location tracking enabled.", 0); }
@@ -389,14 +413,11 @@
         // --- Initialization ---
         function init() {
             showStatus("Initializing Map...", 0);
-
-            // Set initial wrapper size (explicitly)
             mapContentWrapper.style.width = `${MAP_NATIVE_WIDTH}px`;
             mapContentWrapper.style.height = `${MAP_NATIVE_HEIGHT}px`;
-
             calculateMinScale();
             currentScale = minScale;
-            applyTransform(); // Center the map initially
+            applyTransform();
 
             mapContainer.addEventListener('touchstart', handleTouchStart, { passive: false });
             mapContainer.addEventListener('touchmove', handleTouchMove, { passive: false });
@@ -404,23 +425,10 @@
             mapContainer.addEventListener('touchcancel', handleTouchEnd, { passive: false });
             window.addEventListener('resize', handleResize);
 
-            mapImage.onerror = () => {
-                showStatus(`Error loading map image: ${MAP_URL}`, 0);
-                console.error(`Error loading map image: ${MAP_URL}`);
-            };
-             mapImage.onload = () => {
-                 console.log("Map image loaded successfully.");
-                 showStatus("Map loaded. Requesting permissions...", 0);
-                 requestPermissions();
-             };
-
-             if (mapImage.complete && mapImage.naturalWidth > 0) {
-                 console.log("Map image already loaded (cached).");
-                 showStatus("Map loaded. Requesting permissions...", 0);
-                 requestPermissions();
-             } else if (mapImage.complete) {
-                 mapImage.onerror();
-             }
+            mapImage.onerror = () => { showStatus(`Error loading map image: ${MAP_URL}`, 0); console.error(`Error loading map image: ${MAP_URL}`); };
+            mapImage.onload = () => { console.log("Map image loaded."); showStatus("Map loaded. Requesting permissions...", 0); requestPermissions(); };
+            if (mapImage.complete && mapImage.naturalWidth > 0) { console.log("Map image cached."); showStatus("Map loaded. Requesting permissions...", 0); requestPermissions(); }
+            else if (mapImage.complete) { mapImage.onerror(); }
         }
 
         document.addEventListener('DOMContentLoaded', init);
