@@ -49,19 +49,19 @@
             z-index: 1;
         }
 
-        /* User Arrow Indicator - Larger */
+        /* User Arrow Indicator - Adjusted Size (2x) */
         #user-arrow {
             position: absolute;
             width: 0;
             height: 0;
-            /* Approx 3x larger borders */
-            border-left: 36px solid transparent;
-            border-right: 36px solid transparent;
-            border-bottom: 72px solid rgba(0, 122, 255, 0.9); /* Blue arrow */
+            /* Approx 2x larger borders */
+            border-left: 24px solid transparent;
+            border-right: 24px solid transparent;
+            border-bottom: 48px solid rgba(0, 122, 255, 0.9); /* Blue arrow */
             /* Adjust positioning and origin for new size */
-            left: -36px; /* half new width */
-            top: -72px; /* new height */
-            transform-origin: center 72px; /* Rotate around bottom center point */
+            left: -24px; /* half new width */
+            top: -48px; /* new height */
+            transform-origin: center 48px; /* Rotate around bottom center point */
             box-shadow: 0 0 8px rgba(0,0,0,0.6);
             display: none;
             pointer-events: none;
@@ -169,22 +169,17 @@
         const MAP_URL = 'https://kylebur.github.io/riversidemap/map.jpg';
         const MAP_NATIVE_WIDTH = 8052;
         const MAP_NATIVE_HEIGHT = 7892;
-        const BREADCRUMB_DROP_DISTANCE_METERS = 5;
+        // CHANGED: Drop breadcrumbs more frequently
+        const BREADCRUMB_DROP_DISTANCE_METERS = 1;
 
         // --- Corner Point Definitions ---
-        // Geographic coordinates (Latitude, Longitude)
-        const P_A = { lat: 44.03563483341134, lon: -69.53289514245955 }; // Lower Right
-        const P_B = { lat: 44.03656680482132, lon: -69.53218069651464 }; // Lower Left
-        const P_C = { lat: 44.0359674571086, lon: -69.53086630657867 }; // Upper Left
-        const P_D = { lat: 44.03503548569862, lon: -69.53158075252358 }; // Upper Right
+        const P_A = { lat: 44.03563483341134, lon: -69.53289514245955 }; // LR
+        const P_B = { lat: 44.03656680482132, lon: -69.53218069651464 }; // LL
+        const P_C = { lat: 44.0359674571086, lon: -69.53086630657867 }; // UL
+        const P_D = { lat: 44.03503548569862, lon: -69.53158075252358 }; // UR
+        const PX_UL = { x: 0, y: 0 }; const PX_UR = { x: MAP_NATIVE_WIDTH, y: 0 }; const PX_LL = { x: 0, y: MAP_NATIVE_HEIGHT };
 
-        // Corresponding Pixel coordinates
-        const PX_UL = { x: 0, y: 0 };                     // Upper Left (C)
-        const PX_UR = { x: MAP_NATIVE_WIDTH, y: 0 };      // Upper Right (D)
-        const PX_LL = { x: 0, y: MAP_NATIVE_HEIGHT };     // Lower Left (B)
-        // const PX_LR = { x: MAP_NATIVE_WIDTH, y: MAP_NATIVE_HEIGHT }; // Lower Right (A) - Not needed for affine calc
-
-        // --- Affine Transformation Coefficients (calculated later) ---
+        // --- Affine Transformation Coefficients ---
         let affineCoeffs = { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, valid: false };
 
         // --- DOM Elements ---
@@ -215,131 +210,71 @@
 
         // --- Utility Functions ---
         function showStatus(message, duration = 3000) { /* ... unchanged ... */
-            statusBox.textContent = message;
-            statusBox.style.display = 'block';
-            console.log("Status:", message);
-            if (duration > 0) {
-                setTimeout(() => {
-                    if (statusBox.textContent === message) {
-                       statusBox.style.display = 'none';
-                    }
-                }, duration);
-            }
+            statusBox.textContent = message; statusBox.style.display = 'block'; console.log("Status:", message);
+            if (duration > 0) { setTimeout(() => { if (statusBox.textContent === message) { statusBox.style.display = 'none'; } }, duration); }
         }
         function toRad(degrees) { /* ... unchanged ... */ return degrees * Math.PI / 180; }
         function calculateDistance(lat1, lon1, lat2, lon2) { /* ... unchanged ... */
-            const R = 6371e3; const phi1 = toRad(lat1); const phi2 = toRad(lat2);
-            const deltaPhi = toRad(lat2 - lat1); const deltaLambda = toRad(lon2 - lon1);
-            const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) + Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-            return R * c;
+            const R = 6371e3; const phi1 = toRad(lat1); const phi2 = toRad(lat2); const dPhi = toRad(lat2 - lat1); const dLambda = toRad(lon2 - lon1);
+            const a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2) + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) * Math.sin(dLambda / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); return R * c;
         }
 
-        // --- Coordinate Transformation (NEW: Affine) ---
-        function calculateAffineCoefficients() {
+        // --- Coordinate Transformation (Affine) ---
+        function calculateAffineCoefficients() { /* ... unchanged ... */
             console.log("Calculating Affine Transformation Coefficients...");
-            // Use points C(UL), D(UR), B(LL) for calculation
-            const lon1 = P_C.lon, lat1 = P_C.lat, px1 = PX_UL.x, py1 = PX_UL.y; // C -> (0, 0)
-            const lon2 = P_D.lon, lat2 = P_D.lat, px2 = PX_UR.x, py2 = PX_UR.y; // D -> (W, 0)
-            const lon3 = P_B.lon, lat3 = P_B.lat, px3 = PX_LL.x, py3 = PX_LL.y; // B -> (0, H)
-
-            const W = MAP_NATIVE_WIDTH;
-            const H = MAP_NATIVE_HEIGHT;
-
-            // Calculate differences
-            const dLon21 = lon2 - lon1;
-            const dLat21 = lat2 - lat1;
-            const dLon31 = lon3 - lon1;
-            const dLat31 = lat3 - lat1;
-
-            // Calculate determinant
-            const det = dLon21 * dLat31 - dLat21 * dLon31;
-            console.log("Determinant:", det);
-
-            if (Math.abs(det) < 1e-10) { // Check if determinant is close to zero
-                console.error("Cannot calculate affine coefficients: points might be collinear.");
-                showStatus("Error: Map corner points are invalid for transformation.", 0);
-                affineCoeffs.valid = false;
-                return;
-            }
-
-            // Solve for a, b (for Px)
-            const dPx21 = px2 - px1; // W - 0 = W
-            const dPx31 = px3 - px1; // 0 - 0 = 0
-            const a = (dPx21 * dLat31 - dLat21 * dPx31) / det;
-            const b = (dLon21 * dPx31 - dPx21 * dLon31) / det;
-            const c = px1 - a * lon1 - b * lat1;
-
-            // Solve for d, e (for Py)
-            const dPy21 = py2 - py1; // 0 - 0 = 0
-            const dPy31 = py3 - py1; // H - 0 = H
-            const d = (dPy21 * dLat31 - dLat21 * dPy31) / det;
-            const e = (dLon21 * dPy31 - dPy21 * dLon31) / det;
-            const f = py1 - d * lon1 - e * lat1;
-
-            affineCoeffs = { a, b, c, d, e, f, valid: true };
-            console.log("Affine Coefficients calculated:", affineCoeffs);
+            const lon1 = P_C.lon, lat1 = P_C.lat, px1 = PX_UL.x, py1 = PX_UL.y; const lon2 = P_D.lon, lat2 = P_D.lat, px2 = PX_UR.x, py2 = PX_UR.y; const lon3 = P_B.lon, lat3 = P_B.lat, px3 = PX_LL.x, py3 = PX_LL.y;
+            const W = MAP_NATIVE_WIDTH; const H = MAP_NATIVE_HEIGHT; const dLon21 = lon2 - lon1; const dLat21 = lat2 - lat1; const dLon31 = lon3 - lon1; const dLat31 = lat3 - lat1;
+            const det = dLon21 * dLat31 - dLat21 * dLon31; console.log("Determinant:", det);
+            if (Math.abs(det) < 1e-10) { console.error("Cannot calculate affine coefficients: points might be collinear."); showStatus("Error: Map corner points are invalid for transformation.", 0); affineCoeffs.valid = false; return; }
+            const dPx21 = px2 - px1; const dPx31 = px3 - px1; const a = (dPx21 * dLat31 - dLat21 * dPx31) / det; const b = (dLon21 * dPx31 - dPx21 * dLon31) / det; const c = px1 - a * lon1 - b * lat1;
+            const dPy21 = py2 - py1; const dPy31 = py3 - py1; const d = (dPy21 * dLat31 - dLat21 * dPy31) / det; const e = (dLon21 * dPy31 - dPy21 * dLon31) / det; const f = py1 - d * lon1 - e * lat1;
+            affineCoeffs = { a, b, c, d, e, f, valid: true }; console.log("Affine Coefficients calculated:", affineCoeffs);
         }
-
-        function geoToPixel(lat, lon) {
-            if (!affineCoeffs.valid) {
-                console.error("Affine coefficients not valid.");
-                return null; // Cannot transform
-            }
-            // Apply affine transformation
-            const { a, b, c, d, e, f } = affineCoeffs;
-            const pixelX = a * lon + b * lat + c;
-            const pixelY = d * lon + e * lat + f;
-
-            // No bounds check here anymore - mapping is based on the affine transform
-            // Points far outside the geographic area will map to pixels far outside the 0-W, 0-H range.
+        function geoToPixel(lat, lon) { /* ... unchanged ... */
+            if (!affineCoeffs.valid) { console.error("Affine coefficients not valid."); return null; }
+            const { a, b, c, d, e, f } = affineCoeffs; const pixelX = a * lon + b * lat + c; const pixelY = d * lon + e * lat + f;
             console.log(`Transformed (Lat: ${lat}, Lon: ${lon}) to Pixel (X: ${pixelX.toFixed(2)}, Y: ${pixelY.toFixed(2)})`);
             return { x: pixelX, y: pixelY };
         }
 
         // --- Map Manipulation Functions ---
         function applyTransform() { /* ... unchanged ... */
-            const screenWidth = window.innerWidth; const screenHeight = window.innerHeight;
-            const scaledWidth = MAP_NATIVE_WIDTH * currentScale; const scaledHeight = MAP_NATIVE_HEIGHT * currentScale;
+            const screenWidth = window.innerWidth; const screenHeight = window.innerHeight; const scaledWidth = MAP_NATIVE_WIDTH * currentScale; const scaledHeight = MAP_NATIVE_HEIGHT * currentScale;
             const maxTranslateX = 0, maxTranslateY = 0; const minTranslateX = screenWidth - scaledWidth; const minTranslateY = screenHeight - scaledHeight;
             if (scaledWidth > screenWidth) { currentX = Math.max(minTranslateX, Math.min(maxTranslateX, currentX)); } else { currentX = (screenWidth - scaledWidth) / 2; }
             if (scaledHeight > screenHeight) { currentY = Math.max(minTranslateY, Math.min(maxTranslateY, currentY)); } else { currentY = (screenHeight - scaledHeight) / 2; }
             mapContentWrapper.style.transform = `translate(${currentX}px, ${currentY}px) scale(${currentScale})`;
         }
         function addBreadcrumbElement(lat, lon) { /* ... unchanged ... */
-            const pixelCoords = geoToPixel(lat, lon); // Uses new transform
-            if (pixelCoords) {
-                const dot = document.createElement('div'); dot.className = 'breadcrumb-dot';
-                dot.style.left = `${pixelCoords.x}px`; dot.style.top = `${pixelCoords.y}px`;
-                mapContentWrapper.appendChild(dot);
-            }
+            const pixelCoords = geoToPixel(lat, lon); if (pixelCoords) { const dot = document.createElement('div'); dot.className = 'breadcrumb-dot'; dot.style.left = `${pixelCoords.x}px`; dot.style.top = `${pixelCoords.y}px`; mapContentWrapper.appendChild(dot); }
         }
         function centerMapOnLocation(lat, lon) { /* ... unchanged ... */
-            const pixelCoords = geoToPixel(lat, lon); // Uses new transform
-            if (pixelCoords) {
-                 const targetX = (window.innerWidth / 2) - (pixelCoords.x * currentScale);
-                 const targetY = (window.innerHeight / 2) - (pixelCoords.y * currentScale);
-                 currentX = targetX; currentY = targetY;
-                 applyTransform();
-            }
+            const pixelCoords = geoToPixel(lat, lon); if (pixelCoords) { const targetX = (window.innerWidth / 2) - (pixelCoords.x * currentScale); const targetY = (window.innerHeight / 2) - (pixelCoords.y * currentScale); currentX = targetX; currentY = targetY; applyTransform(); }
         }
-        function updateUserIndicatorPosition(lat, lon) { /* ... Uses new geoToPixel ... */
-            lastKnownLat = lat; lastKnownLon = lon;
-            const pixelCoords = geoToPixel(lat, lon); // Uses new transform
 
-            // Arrow visibility now depends only on whether geoToPixel returns coordinates
+        // --- Arrow Update Function (Added Logging) ---
+        function updateUserIndicatorPosition(lat, lon) {
+            lastKnownLat = lat; lastKnownLon = lon;
+            const pixelCoords = geoToPixel(lat, lon);
+
+            console.log("Updating arrow. Coords:", pixelCoords, "Heading:", currentHeading); // DEBUG LOG
+
             if (pixelCoords) {
+                // Apply calculated position
                 userArrow.style.left = `${pixelCoords.x}px`;
                 userArrow.style.top = `${pixelCoords.y}px`;
                 userArrow.style.transform = `rotate(${currentHeading}deg)`;
 
-                // Show arrow if it was hidden
+                // Ensure arrow is visible
                 if (userArrow.style.display === 'none') {
+                    console.log("Setting arrow display to block"); // DEBUG LOG
                     userArrow.style.display = 'block';
                     showStatus("Location found!", 3000);
                 }
             } else {
-                 // This case should now only happen if affine coeffs are invalid
+                 // Hide arrow if transform failed (should only be if coeffs invalid)
+                 console.log("Hiding arrow because pixelCoords are null"); // DEBUG LOG
                  userArrow.style.display = 'none';
                  showStatus("Cannot determine location on map (transform error).", 0);
             }
@@ -350,67 +285,62 @@
         }
 
         // --- Event Handlers ---
-        function handleLocationUpdate(position) { /* ... unchanged logic, uses new transforms indirectly ... */
-            if (!hasGeoPermission) { hasGeoPermission = true; }
-            const { latitude, longitude, accuracy } = position.coords;
-            console.log(`Location: ${latitude}, ${longitude} (Accuracy: ${accuracy}m)`);
-            showStatus(`Location Updated (Accuracy: ${accuracy.toFixed(0)}m)`, 2000);
-            updateUserIndicatorPosition(latitude, longitude); // Uses new geoToPixel
-            if (breadcrumbsEnabled) {
-                let shouldDrop = false; if (lastDroppedCrumbCoords === null) { shouldDrop = true; } else { const d = calculateDistance(lastDroppedCrumbCoords.lat, lastDroppedCrumbCoords.lon, latitude, longitude); console.log(`Distance moved: ${d.toFixed(1)}m`); if (d >= BREADCRUMB_DROP_DISTANCE_METERS) { shouldDrop = true; } }
-                if (shouldDrop) { console.log("Dropping breadcrumb."); const c = { lat: latitude, lon: longitude }; breadcrumbs.push(c); lastDroppedCrumbCoords = c; addBreadcrumbElement(latitude, longitude); } // Uses new geoToPixel
-            }
-            if (followModeEnabled) { centerMapOnLocation(latitude, longitude); } // Uses new geoToPixel
+        function handleLocationUpdate(position) { /* ... unchanged logic ... */
+            if (!hasGeoPermission) { hasGeoPermission = true; } const { latitude, longitude, accuracy } = position.coords;
+            console.log(`Location: ${latitude}, ${longitude} (Accuracy: ${accuracy}m)`); showStatus(`Location Updated (Accuracy: ${accuracy.toFixed(0)}m)`, 2000);
+            updateUserIndicatorPosition(latitude, longitude); // Calls func with logging
+            if (breadcrumbsEnabled) { let shouldDrop = false; if (lastDroppedCrumbCoords === null) { shouldDrop = true; } else { const d = calculateDistance(lastDroppedCrumbCoords.lat, lastDroppedCrumbCoords.lon, latitude, longitude); console.log(`Distance moved: ${d.toFixed(1)}m`); if (d >= BREADCRUMB_DROP_DISTANCE_METERS) { shouldDrop = true; } } if (shouldDrop) { console.log("Dropping breadcrumb."); const c = { lat: latitude, lon: longitude }; breadcrumbs.push(c); lastDroppedCrumbCoords = c; addBreadcrumbElement(latitude, longitude); } }
+            if (followModeEnabled) { centerMapOnLocation(latitude, longitude); }
         }
         function handleLocationError(error) { /* ... unchanged ... */
             let message = "Error getting location: "; switch (error.code) { case error.PERMISSION_DENIED: message += "Permission denied."; break; case error.POSITION_UNAVAILABLE: message += "Location information unavailable."; break; case error.TIMEOUT: message += "Location request timed out."; break; default: message += `Unknown error (${error.code}).`; }
             console.error(message); showStatus(message, 5000); userArrow.style.display = 'none'; hasGeoPermission = false;
         }
         function handleOrientationUpdate(event) { /* ... unchanged ... */
-            hasOrientationPermission = true; let heading = event.webkitCompassHeading !== undefined ? event.webkitCompassHeading : event.alpha;
-            if (heading !== null) { currentHeading = heading; if (userArrow.style.display !== 'none') { userArrow.style.transform = `rotate(${currentHeading}deg)`; } } else { console.warn("Could not get compass heading."); }
+            hasOrientationPermission = true; let heading = event.webkitCompassHeading !== undefined ? event.webkitCompassHeading : event.alpha; if (heading !== null) { currentHeading = heading; if (userArrow.style.display !== 'none') { userArrow.style.transform = `rotate(${currentHeading}deg)`; } } else { console.warn("Could not get compass heading."); }
         }
          function handleOrientationError(error) { /* ... unchanged ... */ console.error("DeviceOrientation Error:", error); showStatus("Could not access orientation sensors.", 5000); }
         function handleTouchStart(event) { /* ... unchanged ... */ if (followModeEnabled) return; if (event.touches.length === 1) { isPanning = true; mapContainer.classList.add('grabbing'); startX = event.touches[0].pageX - currentX; startY = event.touches[0].pageY - currentY; } else if (event.touches.length === 2) { isPanning = false; mapContainer.classList.remove('grabbing'); const dx = event.touches[0].pageX - event.touches[1].pageX; const dy = event.touches[0].pageY - event.touches[1].pageY; pinchStartDistance = Math.sqrt(dx * dx + dy * dy); pinchStartX = (event.touches[0].pageX + event.touches[1].pageX) / 2; pinchStartY = (event.touches[0].pageY + event.touches[1].pageY) / 2; initialMapX = currentX; initialMapY = currentY; initialScale = currentScale; } }
         function handleTouchMove(event) { /* ... unchanged ... */ if (event.touches.length > 1 || isPanning) { event.preventDefault(); } if (isPanning && event.touches.length === 1 && !followModeEnabled) { currentX = event.touches[0].pageX - startX; currentY = event.touches[0].pageY - startY; applyTransform(); } else if (event.touches.length === 2 && pinchStartDistance > 0) { const dx = event.touches[0].pageX - event.touches[1].pageX; const dy = event.touches[0].pageY - event.touches[1].pageY; const d = Math.sqrt(dx * dx + dy * dy); let sC = d / pinchStartDistance; let nS = initialScale * sC; nS = Math.max(minScale, Math.min(maxScale, nS)); const mX = (pinchStartX - initialMapX) / initialScale; const mY = (pinchStartY - initialMapY) / initialScale; currentScale = nS; currentX = pinchStartX - mX * currentScale; currentY = pinchStartY - mY * currentScale; applyTransform(); } }
         function handleTouchEnd(event) { /* ... unchanged ... */ if (isPanning) { isPanning = false; mapContainer.classList.remove('grabbing'); } if (event.touches.length < 2) { pinchStartDistance = 0; } }
         function handleResize() { /* ... unchanged ... */ calculateMinScale(); applyTransform(); }
-        async function requestPermissions() { /* ... unchanged ... */ let oG = false; let gG = false; if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') { showStatus("Requesting orientation permission..."); try { const p = await DeviceOrientationEvent.requestPermission(); if (p === 'granted') { window.addEventListener('deviceorientation', handleOrientationUpdate); oG = true; hasOrientationPermission = true; showStatus("Orientation granted.", 2000); } else { showStatus("Orientation denied.", 5000); } } catch (e) { console.error("Orientation permission error:", e); showStatus("Could not request orientation permission.", 5000); window.addEventListener('deviceorientation', handleOrientationUpdate, true); oG = true; } } else { window.addEventListener('deviceorientation', handleOrientationUpdate, true); oG = true; hasOrientationPermission = true; } if (navigator.geolocation) { showStatus("Requesting location permission..."); navigator.geolocation.watchPosition( handleLocationUpdate, handleLocationError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }); gG = true; } else { showStatus("Geolocation is not supported.", 0); gG = false; } if (!gG && !oG) { showStatus("Required sensors not available/denied.", 0); } else if (!gG) { showStatus("Location not available/denied.", 0); } else if (!oG) { showStatus("Orientation not available/denied.", 0); } else { showStatus("Waiting for first location fix...", 0); } }
+
+        // --- Permissions Request (Modified watchPosition options) ---
+        async function requestPermissions() {
+             let orientationGranted = false; let geoGranted = false;
+             // Orientation (unchanged)
+             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') { showStatus("Requesting orientation permission..."); try { const p = await DeviceOrientationEvent.requestPermission(); if (p === 'granted') { window.addEventListener('deviceorientation', handleOrientationUpdate); oG = true; hasOrientationPermission = true; showStatus("Orientation granted.", 2000); } else { showStatus("Orientation denied.", 5000); } } catch (e) { console.error("Orientation permission error:", e); showStatus("Could not request orientation permission.", 5000); window.addEventListener('deviceorientation', handleOrientationUpdate, true); oG = true; } } else { window.addEventListener('deviceorientation', handleOrientationUpdate, true); oG = true; hasOrientationPermission = true; }
+             // Geolocation (CHANGED: maximumAge: 0)
+             if (navigator.geolocation) {
+                 showStatus("Requesting location permission...");
+                 navigator.geolocation.watchPosition(
+                     handleLocationUpdate,
+                     handleLocationError,
+                     {
+                         enableHighAccuracy: true,
+                         maximumAge: 0, // Request fresh updates
+                         timeout: 10000
+                     }
+                 );
+                 geoGranted = true;
+             } else { showStatus("Geolocation is not supported.", 0); geoGranted = false; }
+             // Status Update (unchanged)
+             if (!geoGranted && !orientationGranted) { showStatus("Required sensors not available/denied.", 0); } else if (!geoGranted) { showStatus("Location not available/denied.", 0); } else if (!orientationGranted) { showStatus("Orientation not available/denied.", 0); } else { showStatus("Waiting for first location fix...", 0); }
+        }
 
         // --- Initialization ---
-        function init() {
-            showStatus("Initializing Map...", 0);
-
-            // Calculate affine transform coefficients FIRST
-            calculateAffineCoefficients();
-
-            mapContentWrapper.style.width = `${MAP_NATIVE_WIDTH}px`;
-            mapContentWrapper.style.height = `${MAP_NATIVE_HEIGHT}px`;
-            calculateMinScale(); currentScale = minScale;
-            applyTransform();
-
-            // --- Add Menu Listeners ---
+        function init() { /* ... unchanged ... */
+            showStatus("Initializing Map...", 0); calculateAffineCoefficients();
+            mapContentWrapper.style.width = `${MAP_NATIVE_WIDTH}px`; mapContentWrapper.style.height = `${MAP_NATIVE_HEIGHT}px`;
+            calculateMinScale(); currentScale = minScale; applyTransform();
             settingsButton.addEventListener('click', () => { const v = settingsMenu.style.display === 'block'; settingsMenu.style.display = v ? 'none' : 'block'; });
             toggleBreadcrumbs.addEventListener('change', (e) => { breadcrumbsEnabled = e.target.checked; console.log("Breadcrumbs:", breadcrumbsEnabled); });
-            toggleFollow.addEventListener('change', (e) => {
-                followModeEnabled = e.target.checked; console.log("Follow Mode:", followModeEnabled);
-                if (followModeEnabled) { mapContainer.classList.add('following'); if (lastKnownLat !== null) { centerMapOnLocation(lastKnownLat, lastKnownLon); } }
-                else { mapContainer.classList.remove('following'); }
-            });
-            toggleBreadcrumbs.checked = breadcrumbsEnabled; toggleFollow.checked = followModeEnabled; // Set initial states
-
-            // --- Add Map Interaction Listeners ---
-            mapContainer.addEventListener('touchstart', handleTouchStart, { passive: false });
-            mapContainer.addEventListener('touchmove', handleTouchMove, { passive: false });
-            mapContainer.addEventListener('touchend', handleTouchEnd, { passive: false });
-            mapContainer.addEventListener('touchcancel', handleTouchEnd, { passive: false });
-            window.addEventListener('resize', handleResize);
-
-            // --- Image Loading ---
+            toggleFollow.addEventListener('change', (e) => { followModeEnabled = e.target.checked; console.log("Follow Mode:", followModeEnabled); if (followModeEnabled) { mapContainer.classList.add('following'); if (lastKnownLat !== null) { centerMapOnLocation(lastKnownLat, lastKnownLon); } } else { mapContainer.classList.remove('following'); } });
+            toggleBreadcrumbs.checked = breadcrumbsEnabled; toggleFollow.checked = followModeEnabled;
+            mapContainer.addEventListener('touchstart', handleTouchStart, { passive: false }); mapContainer.addEventListener('touchmove', handleTouchMove, { passive: false }); mapContainer.addEventListener('touchend', handleTouchEnd, { passive: false }); mapContainer.addEventListener('touchcancel', handleTouchEnd, { passive: false }); window.addEventListener('resize', handleResize);
             mapImage.onerror = () => { showStatus(`Error loading map image: ${MAP_URL}`, 0); console.error(`Error loading map image: ${MAP_URL}`); };
             mapImage.onload = () => { console.log("Map image loaded."); showStatus("Map loaded. Requesting permissions...", 0); if (affineCoeffs.valid) requestPermissions(); else showStatus("Map loaded but transform failed. Cannot get location.", 0); };
-            if (mapImage.complete && mapImage.naturalWidth > 0) { console.log("Map image cached."); showStatus("Map loaded. Requesting permissions...", 0); if (affineCoeffs.valid) requestPermissions(); else showStatus("Map loaded but transform failed. Cannot get location.", 0); }
-            else if (mapImage.complete) { mapImage.onerror(); }
+            if (mapImage.complete && mapImage.naturalWidth > 0) { console.log("Map image cached."); showStatus("Map loaded. Requesting permissions...", 0); if (affineCoeffs.valid) requestPermissions(); else showStatus("Map loaded but transform failed. Cannot get location.", 0); } else if (mapImage.complete) { mapImage.onerror(); }
         }
 
         document.addEventListener('DOMContentLoaded', init);
