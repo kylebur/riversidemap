@@ -17,68 +17,55 @@
             color: white;
         }
 
-        /* Container for the map and controls */
+        /* Container for the map view */
         #map-container {
             width: 100%;
             height: 100%;
             overflow: hidden; /* Crucial for panning/zooming */
-            position: relative; /* Positioning context for map and indicator */
+            position: relative; /* Needed for absolute positioning of wrapper */
             cursor: grab; /* Indicate pannable */
         }
         #map-container.grabbing {
             cursor: grabbing;
         }
 
-        /* The map image */
-        #map-image {
+        /* Wrapper for map image and user arrow - THIS is transformed */
+        #map-content-wrapper {
             position: absolute;
             top: 0;
             left: 0;
-            /* Let JS set width/height and transform */
+            /* Set initial size in JS */
             transform-origin: 0 0; /* Zoom/pan from top-left */
-            user-select: none; /* Prevent image selection */
-            -webkit-user-drag: none; /* Prevent image dragging */
             will-change: transform; /* Optimize transformations */
         }
 
-        /* User location indicator */
-        #user-indicator {
-            position: absolute;
-            width: 24px;
-            height: 24px;
-            /* Centered rotation/positioning */
-            left: -12px;
-            top: -12px;
-            background-color: rgba(0, 122, 255, 0.8); /* Blue dot */
-            border-radius: 50%;
-            border: 2px solid white;
-            box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
-            /* Arrow shape using borders */
-            /* Use a simpler dot for now, arrow can be complex with rotation */
-            /* transform-origin: center center; */ /* Rotate around the center */
-            /* will-change: transform; */ /* Optimize transformations */
-            display: none; /* Hidden until first location fix */
-            pointer-events: none; /* Don't interfere with map interactions */
-            z-index: 10;
+        /* The map image - fills the wrapper */
+        #map-image {
+            display: block; /* Remove extra space below image */
+            width: 100%;
+            height: 100%;
+            user-select: none; /* Prevent image selection */
+            -webkit-user-drag: none; /* Prevent image dragging */
         }
 
-        /* Arrow shape (alternative indicator) */
+        /* Arrow shape (user indicator) */
         #user-arrow {
-            position: absolute;
+            position: absolute; /* Positioned relative to the wrapper */
             width: 0;
             height: 0;
             border-left: 12px solid transparent;
             border-right: 12px solid transparent;
-            border-bottom: 24px solid rgba(255, 0, 0, 0.9); /* Red arrow */
+            /* CHANGED: Blue arrow color */
+            border-bottom: 24px solid rgba(0, 122, 255, 0.9); /* Blue arrow */
             /* Centered rotation/positioning */
             left: -12px; /* half width */
-            top: -28px; /* adjust for arrow shape */
+            top: -28px; /* adjust for arrow shape based on transform-origin */
             transform-origin: center 16px; /* Rotate around base middle */
             box-shadow: 0 0 5px rgba(0,0,0,0.5);
             display: none; /* Hidden until first location/heading fix */
             pointer-events: none; /* Don't interfere with map interactions */
-            z-index: 10;
-            will-change: transform;
+            z-index: 10; /* Ensure it's above the map image */
+            will-change: transform, left, top; /* Optimize updates */
         }
 
         /* Status/Error Message Box */
@@ -91,15 +78,18 @@
             padding: 8px 12px;
             border-radius: 5px;
             font-size: 14px;
-            z-index: 20;
+            z-index: 20; /* Above map container */
             display: none; /* Hidden initially */
         }
     </style>
 </head>
 <body>
     <div id="map-container">
-        <img id="map-image" src="https://kylebur.github.io/riversidemap/map.jpg" alt="Map Background" />
-        <div id="user-arrow"></div> </div>
+        <div id="map-content-wrapper">
+            <img id="map-image" src="https://kylebur.github.io/riversidemap/map.jpg" alt="Map Background" />
+            <div id="user-arrow"></div>
+        </div>
+    </div>
     <div id="status-box">Initializing...</div>
 
     <script>
@@ -109,7 +99,6 @@
         const MAP_NATIVE_HEIGHT = 7892;
 
         // Geographic corners (derived from provided points A, B, C, D)
-        // Assuming standard orientation: MaxLat=Top, MinLat=Bottom, MinLon=Left, MaxLon=Right
         const MAP_GEO_BOUNDS = {
             maxLat: 44.03656680482132, // B (highest lat)
             minLat: 44.03503548569862, // D (lowest lat)
@@ -121,26 +110,31 @@
 
         // --- DOM Elements ---
         const mapContainer = document.getElementById('map-container');
+        // ADDED: Get the wrapper element
+        const mapContentWrapper = document.getElementById('map-content-wrapper');
         const mapImage = document.getElementById('map-image');
-        // const userIndicator = document.getElementById('user-indicator');
         const userArrow = document.getElementById('user-arrow');
         const statusBox = document.getElementById('status-box');
 
         // --- State Variables ---
         let currentScale = 1.0;
-        let minScale = 1.0; // Will be calculated later
-        let maxScale = 4.0; // Arbitrary max zoom
-        let currentX = 0; // Translation X
-        let currentY = 0; // Translation Y
+        let minScale = 1.0;
+        let maxScale = 5.0; // Increased max zoom slightly
+        let currentX = 0; // Translation X of the wrapper
+        let currentY = 0; // Translation Y of the wrapper
         let isPanning = false;
-        let startX, startY; // For panning
-        let pinchStartDistance = 0; // For zooming
-        let lastTouchEndTime = 0; // For double tap detection (optional)
+        let startX, startY;
+        let pinchStartDistance = 0;
+        let pinchStartX, pinchStartY;
+        let initialMapX, initialMapY;
+        let initialScale;
+        let lastTouchEndTime = 0;
 
-        let currentHeading = 0; // Device orientation alpha
+        let currentHeading = 0;
         let hasGeoPermission = false;
         let hasOrientationPermission = false;
-
+        let lastKnownLat = null;
+        let lastKnownLon = null;
 
         // --- Utility Functions ---
 
@@ -150,7 +144,6 @@
             console.log("Status:", message);
             if (duration > 0) {
                 setTimeout(() => {
-                    // Hide only if the message hasn't changed
                     if (statusBox.textContent === message) {
                        statusBox.style.display = 'none';
                     }
@@ -158,85 +151,68 @@
             }
         }
 
-        // Convert Geographic Coordinates (Lat, Lon) to Pixel Coordinates on the map image
         function geoToPixel(lat, lon) {
-            // Check if coordinates are within map bounds
             if (lat > MAP_GEO_BOUNDS.maxLat || lat < MAP_GEO_BOUNDS.minLat ||
                 lon < MAP_GEO_BOUNDS.minLon || lon > MAP_GEO_BOUNDS.maxLon) {
                 console.warn("Coordinates out of map bounds:", lat, lon);
-                // Return center as fallback? Or null?
                  return null;
-                // return { x: MAP_NATIVE_WIDTH / 2, y: MAP_NATIVE_HEIGHT / 2 };
             }
-
+            // Calculate pixel coordinates relative to the map's native dimensions
             const pixelY = MAP_NATIVE_HEIGHT * (MAP_GEO_BOUNDS.maxLat - lat) / MAP_LAT_RANGE;
             const pixelX = MAP_NATIVE_WIDTH * (lon - MAP_GEO_BOUNDS.minLon) / MAP_LON_RANGE;
 
-            // Clamp values just in case of floating point errors near edges
             return {
                 x: Math.max(0, Math.min(MAP_NATIVE_WIDTH, pixelX)),
                 y: Math.max(0, Math.min(MAP_NATIVE_HEIGHT, pixelY))
             };
         }
 
-        // Apply transform to map image
+        // Apply transform to the map content WRAPPER
         function applyTransform() {
-            // Clamp translation to prevent panning outside map boundaries
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
+            // Use wrapper dimensions for clamping calculations
             const scaledWidth = MAP_NATIVE_WIDTH * currentScale;
             const scaledHeight = MAP_NATIVE_HEIGHT * currentScale;
 
-            // Max translation (how far left/up we can pan)
             const maxTranslateX = 0;
             const maxTranslateY = 0;
-
-            // Min translation (how far right/down we can pan)
-            // Map edge should not go past screen edge
             const minTranslateX = screenWidth - scaledWidth;
             const minTranslateY = screenHeight - scaledHeight;
 
-            // Clamp only if map is larger than screen in that dimension
+            // Clamp translation
             if (scaledWidth > screenWidth) {
                  currentX = Math.max(minTranslateX, Math.min(maxTranslateX, currentX));
             } else {
-                 // Center map if smaller than screen
-                 currentX = (screenWidth - scaledWidth) / 2;
+                 currentX = (screenWidth - scaledWidth) / 2; // Center horizontally
             }
             if (scaledHeight > screenHeight) {
                 currentY = Math.max(minTranslateY, Math.min(maxTranslateY, currentY));
             } else {
-                 // Center map if smaller than screen
-                 currentY = (screenHeight - scaledHeight) / 2;
+                 currentY = (screenHeight - scaledHeight) / 2; // Center vertically
             }
 
-            mapImage.style.transform = `translate(${currentX}px, ${currentY}px) scale(${currentScale})`;
-            // Also update indicator position if visible
-             if (userArrow.style.display !== 'none') {
-                 updateUserIndicatorPosition(lastKnownLat, lastKnownLon); // Re-apply transform based on current map state
-             }
+            // Apply transform to the WRAPPER
+            mapContentWrapper.style.transform = `translate(${currentX}px, ${currentY}px) scale(${currentScale})`;
+
+            // No need to update arrow position here, it's handled by CSS transform
+            // on the parent wrapper and absolute positioning within it.
+            // We just need to ensure its initial left/top/rotate are set correctly.
         }
 
-        // Update the user indicator's position and rotation
-        let lastKnownLat = null;
-        let lastKnownLon = null;
+        // Update the user indicator's position and rotation within the wrapper
         function updateUserIndicatorPosition(lat, lon) {
-            lastKnownLat = lat; // Store for re-calculation on zoom/pan
+            lastKnownLat = lat; // Store for potential future use (e.g., centering)
             lastKnownLon = lon;
             const pixelCoords = geoToPixel(lat, lon);
 
             if (pixelCoords) {
-                // Calculate position relative to the viewport
-                // The coords are relative to the original image size.
-                // We need to scale them and add the map's translation.
-                // Easier: Position the indicator *within* the mapImage container using absolute positioning
-                // based on pixelCoords, and let the container's transform handle the rest.
-
-                // Position the indicator based on calculated pixels relative to the map image itself
+                // Position the arrow based on calculated pixels relative to the map wrapper
                 userArrow.style.left = `${pixelCoords.x}px`;
                 userArrow.style.top = `${pixelCoords.y}px`;
 
                 // Apply rotation based on compass heading
+                // The rotation is applied directly to the arrow
                 userArrow.style.transform = `rotate(${currentHeading}deg)`;
 
                 if (userArrow.style.display === 'none') {
@@ -245,68 +221,54 @@
                 }
             } else {
                  userArrow.style.display = 'none'; // Hide if out of bounds
-                 showStatus("You are outside the map area.", 0); // Persistent message
+                 showStatus("You are outside the map area.", 0);
             }
         }
 
-         // Calculate minimum scale to ensure map fills the screen
          function calculateMinScale() {
             const widthScale = window.innerWidth / MAP_NATIVE_WIDTH;
             const heightScale = window.innerHeight / MAP_NATIVE_HEIGHT;
-            // Use Math.max to ensure the map covers the entire viewport
             minScale = Math.max(widthScale, heightScale);
-            // Ensure current scale isn't less than the new minScale
-            currentScale = Math.max(minScale, currentScale);
+            currentScale = Math.max(minScale, currentScale); // Ensure current isn't too small
          }
 
         // --- Event Handlers ---
 
-        // Geolocation Success
         function handleLocationUpdate(position) {
-            hasGeoPermission = true; // Mark permission as granted implicitly
+            hasGeoPermission = true;
             const { latitude, longitude, accuracy } = position.coords;
             console.log(`Location: ${latitude}, ${longitude} (Accuracy: ${accuracy}m)`);
             showStatus(`Location Updated (Accuracy: ${accuracy.toFixed(0)}m)`, 2000);
             updateUserIndicatorPosition(latitude, longitude);
         }
 
-        // Geolocation Error
         function handleLocationError(error) {
             let message = "Error getting location: ";
             switch (error.code) {
-                case error.PERMISSION_DENIED:
-                    message += "Permission denied.";
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    message += "Location information unavailable.";
-                    break;
-                case error.TIMEOUT:
-                    message += "Location request timed out.";
-                    break;
-                default:
-                    message += `Unknown error (${error.code}).`;
+                case error.PERMISSION_DENIED: message += "Permission denied."; break;
+                case error.POSITION_UNAVAILABLE: message += "Location information unavailable."; break;
+                case error.TIMEOUT: message += "Location request timed out."; break;
+                default: message += `Unknown error (${error.code}).`;
             }
             console.error(message);
             showStatus(message, 5000);
-             userArrow.style.display = 'none'; // Hide indicator if location fails
+             userArrow.style.display = 'none';
         }
 
-        // Device Orientation Update
         function handleOrientationUpdate(event) {
-            hasOrientationPermission = true; // Mark permission granted implicitly
-            // Check for iOS-specific property first
+            hasOrientationPermission = true;
             let heading = event.webkitCompassHeading !== undefined ? event.webkitCompassHeading : event.alpha;
 
             if (heading !== null) {
-                currentHeading = heading; // Use magnetic north heading
-                // console.log("Heading:", currentHeading);
+                // Adjust heading so 0 degrees points UP (North) on the map
+                // Assuming the map image itself is North-up.
+                currentHeading = heading;
                  if (userArrow.style.display !== 'none') {
                      // Update rotation immediately if indicator is visible
                      userArrow.style.transform = `rotate(${currentHeading}deg)`;
                  }
             } else {
                 console.warn("Could not get compass heading.");
-                // showStatus("Compass not available.", 3000);
             }
         }
          function handleOrientationError(error) {
@@ -314,195 +276,134 @@
             showStatus("Could not access orientation sensors.", 5000);
         }
 
-        // Touch Start (Panning and Pinching)
         function handleTouchStart(event) {
-            // event.preventDefault(); // Prevent default scroll/zoom only if needed
-
             if (event.touches.length === 1) {
-                // Start Panning
                 isPanning = true;
                 mapContainer.classList.add('grabbing');
-                // Use pageX/Y for coordinates relative to the viewport
                 startX = event.touches[0].pageX - currentX;
                 startY = event.touches[0].pageY - currentY;
             } else if (event.touches.length === 2) {
-                // Start Pinching
-                isPanning = false; // Stop panning if two fingers are down
+                isPanning = false;
                 mapContainer.classList.remove('grabbing');
                 const dx = event.touches[0].pageX - event.touches[1].pageX;
                 const dy = event.touches[0].pageY - event.touches[1].pageY;
                 pinchStartDistance = Math.sqrt(dx * dx + dy * dy);
-                // Store initial mid-point and map offset for zoom centering
                 pinchStartX = (event.touches[0].pageX + event.touches[1].pageX) / 2;
                 pinchStartY = (event.touches[0].pageY + event.touches[1].pageY) / 2;
+                // Store initial wrapper transform state for zoom calculation
                 initialMapX = currentX;
                 initialMapY = currentY;
                 initialScale = currentScale;
             }
         }
 
-        // Touch Move (Panning and Pinching)
         function handleTouchMove(event) {
-             event.preventDefault(); // Prevent scrolling page while interacting with map
+             event.preventDefault();
 
             if (isPanning && event.touches.length === 1) {
-                // Panning
                 currentX = event.touches[0].pageX - startX;
                 currentY = event.touches[0].pageY - startY;
                 applyTransform();
-            } else if (event.touches.length === 2) {
-                // Pinching
+            } else if (event.touches.length === 2 && pinchStartDistance > 0) {
                 const dx = event.touches[0].pageX - event.touches[1].pageX;
                 const dy = event.touches[0].pageY - event.touches[1].pageY;
                 const currentPinchDistance = Math.sqrt(dx * dx + dy * dy);
+                let scaleChange = currentPinchDistance / pinchStartDistance;
+                let newScale = initialScale * scaleChange;
 
-                if (pinchStartDistance > 0) {
-                    // Calculate scale delta
-                    let scaleChange = currentPinchDistance / pinchStartDistance;
-                    let newScale = initialScale * scaleChange;
+                newScale = Math.max(minScale, Math.min(maxScale, newScale));
 
-                    // Clamp scale
-                    newScale = Math.max(minScale, Math.min(maxScale, newScale));
+                // Calculate zoom point relative to the wrapper's untransformed origin
+                const mapZoomX = (pinchStartX - initialMapX) / initialScale;
+                const mapZoomY = (pinchStartY - initialMapY) / initialScale;
 
-                    // Calculate zoom point relative to map's untransformed origin
-                    // Point on screen where zoom happens: pinchStartX, pinchStartY
-                    // Corresponding point on the map (at initial scale/translation):
-                    const mapZoomX = (pinchStartX - initialMapX) / initialScale;
-                    const mapZoomY = (pinchStartY - initialMapY) / initialScale;
+                // Calculate new translation to keep map point under pinch center
+                currentScale = newScale;
+                currentX = pinchStartX - mapZoomX * currentScale;
+                currentY = pinchStartY - mapZoomY * currentScale;
 
-                    // Calculate the new translation required to keep that map point
-                    // under the pinch center after scaling
-                    currentScale = newScale; // Update scale first
-                    currentX = pinchStartX - mapZoomX * currentScale;
-                    currentY = pinchStartY - mapZoomY * currentScale;
-
-
-                    applyTransform();
-                }
+                applyTransform();
             }
         }
 
-        // Touch End (Panning and Pinching)
         function handleTouchEnd(event) {
-            // event.preventDefault();
-
             if (isPanning) {
                 isPanning = false;
                 mapContainer.classList.remove('grabbing');
             }
             if (event.touches.length < 2) {
-                pinchStartDistance = 0; // Reset pinch distance
+                pinchStartDistance = 0;
             }
-
-             // Optional: Double tap zoom (can be tricky on mobile)
-            // const now = Date.now();
-            // if (now - lastTouchEndTime < 300) { // 300ms threshold for double tap
-            //     // Handle double tap zoom in/out
-            // }
-            // lastTouchEndTime = now;
         }
 
-        // Handle window resize
         function handleResize() {
             calculateMinScale();
-            applyTransform(); // Re-apply transform to adjust clamping/centering
+            applyTransform();
         }
 
-        // Request Permissions (especially for iOS)
         async function requestPermissions() {
-            let orientationGranted = false;
-            let geoGranted = false;
+             let orientationGranted = false;
+             let geoGranted = false;
 
-            // --- Device Orientation ---
-            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-                // iOS 13+ requires explicit permission
-                showStatus("Requesting orientation permission...");
-                try {
-                    const permissionState = await DeviceOrientationEvent.requestPermission();
-                    if (permissionState === 'granted') {
-                        window.addEventListener('deviceorientation', handleOrientationUpdate);
-                        orientationGranted = true;
-                        hasOrientationPermission = true;
-                        showStatus("Orientation permission granted.", 2000);
-                    } else {
-                        showStatus("Orientation permission denied.", 5000);
-                    }
-                } catch (error) {
-                    console.error("Error requesting orientation permission:", error);
-                    showStatus("Could not request orientation permission.", 5000);
-                    // Maybe it doesn't need permission (older iOS, Android)
+             // --- Device Orientation ---
+             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                 showStatus("Requesting orientation permission...");
+                 try {
+                     const permissionState = await DeviceOrientationEvent.requestPermission();
+                     if (permissionState === 'granted') {
+                         window.addEventListener('deviceorientation', handleOrientationUpdate);
+                         orientationGranted = true; hasOrientationPermission = true;
+                         showStatus("Orientation permission granted.", 2000);
+                     } else { showStatus("Orientation permission denied.", 5000); }
+                 } catch (error) {
+                     console.error("Error requesting orientation permission:", error);
+                     showStatus("Could not request orientation permission.", 5000);
                      window.addEventListener('deviceorientation', handleOrientationUpdate, true);
-                     // Assume it might work without explicit grant
                      orientationGranted = true; // Tentative
-                }
-            } else {
-                // Assume permission is not needed or implicitly granted (Android, older iOS)
-                console.log("DeviceOrientationEvent.requestPermission not found. Adding listener directly.");
-                window.addEventListener('deviceorientation', handleOrientationUpdate, true);
-                orientationGranted = true; // Assume okay
-                hasOrientationPermission = true; // Assume okay
-            }
+                 }
+             } else {
+                 console.log("DeviceOrientationEvent.requestPermission not found. Adding listener directly.");
+                 window.addEventListener('deviceorientation', handleOrientationUpdate, true);
+                 orientationGranted = true; hasOrientationPermission = true; // Assume okay
+             }
 
              // --- Geolocation ---
              if (navigator.geolocation) {
                  showStatus("Requesting location permission...");
-                 // Geolocation doesn't have a standard requestPermission method,
-                 // the browser prompts automatically on watchPosition/getCurrentPosition.
-                 // We just need to call it.
-                 navigator.geolocation.watchPosition(
-                     handleLocationUpdate,
-                     handleLocationError,
-                     {
-                         enableHighAccuracy: true, // Request more accurate location
-                         maximumAge: 5000,      // Use cached position if < 5s old
-                         timeout: 10000         // Max time to wait for a fix (10s)
-                     }
+                 navigator.geolocation.watchPosition( handleLocationUpdate, handleLocationError,
+                     { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
                  );
-                 // We don't know for sure if permission is granted yet,
-                 // but handleLocationUpdate/Error will tell us.
-                 // We can assume it's requested.
                  geoGranted = true; // Assume request initiated
              } else {
                  showStatus("Geolocation is not supported by this browser.", 0);
                  geoGranted = false;
              }
 
-             if (!geoGranted && !orientationGranted) {
-                 showStatus("Required sensors (GPS/Compass) not available or permissions denied.", 0);
-             } else if (!geoGranted) {
-                 showStatus("Location not available/denied. Map interaction enabled.", 0);
-             } else if (!orientationGranted) {
-                 showStatus("Orientation not available/denied. Location tracking enabled.", 0);
-             } else {
-                 // Both seem okay initially
-                 showStatus("Waiting for first location fix...", 0);
-             }
+             // --- Update Status Based on Permissions ---
+             if (!geoGranted && !orientationGranted) { showStatus("Required sensors (GPS/Compass) not available or permissions denied.", 0); }
+             else if (!geoGranted) { showStatus("Location not available/denied. Map interaction enabled.", 0); }
+             else if (!orientationGranted) { showStatus("Orientation not available/denied. Location tracking enabled.", 0); }
+             else { showStatus("Waiting for first location fix...", 0); }
         }
-
 
         // --- Initialization ---
         function init() {
             showStatus("Initializing Map...", 0);
 
-            // Set initial image size (important for calculations)
-            mapImage.style.width = `${MAP_NATIVE_WIDTH}px`;
-            mapImage.style.height = `${MAP_NATIVE_HEIGHT}px`;
+            // Set initial wrapper size (explicitly)
+            mapContentWrapper.style.width = `${MAP_NATIVE_WIDTH}px`;
+            mapContentWrapper.style.height = `${MAP_NATIVE_HEIGHT}px`;
 
-            // Calculate initial minimum scale and apply it
             calculateMinScale();
-            currentScale = minScale; // Start zoomed out to fit
+            currentScale = minScale;
             applyTransform(); // Center the map initially
 
-            // Add interaction listeners
             mapContainer.addEventListener('touchstart', handleTouchStart, { passive: false });
             mapContainer.addEventListener('touchmove', handleTouchMove, { passive: false });
             mapContainer.addEventListener('touchend', handleTouchEnd, { passive: false });
             mapContainer.addEventListener('touchcancel', handleTouchEnd, { passive: false });
-
-            // Handle window resize
             window.addEventListener('resize', handleResize);
 
-            // Handle image loading errors
             mapImage.onerror = () => {
                 showStatus(`Error loading map image: ${MAP_URL}`, 0);
                 console.error(`Error loading map image: ${MAP_URL}`);
@@ -510,23 +411,18 @@
              mapImage.onload = () => {
                  console.log("Map image loaded successfully.");
                  showStatus("Map loaded. Requesting permissions...", 0);
-                 // Request sensor permissions after map loads
                  requestPermissions();
              };
 
-             // Check if image already loaded from cache
              if (mapImage.complete && mapImage.naturalWidth > 0) {
                  console.log("Map image already loaded (cached).");
                  showStatus("Map loaded. Requesting permissions...", 0);
                  requestPermissions();
              } else if (mapImage.complete) {
-                 // Complete but failed (e.g., 404)
-                 mapImage.onerror(); // Trigger error handler
+                 mapImage.onerror();
              }
         }
 
-        // Start the application
-        // Use DOMContentLoaded to ensure elements are ready
         document.addEventListener('DOMContentLoaded', init);
 
     </script>
